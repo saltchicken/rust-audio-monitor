@@ -1,10 +1,3 @@
-// Copyright The pipewire-rs Contributors.
-// SPDX-License-Identifier: MIT
-
-//! This file is a rustic interpretation of the [PipeWire audio-capture.c example][example]
-//!
-//! example: https://docs.pipewire.org/audio-capture_8c-example.html
-
 use clap::Parser;
 use pipewire as pw;
 use pw::{properties::properties, spa};
@@ -14,9 +7,27 @@ use spa::pod::Pod;
 use std::convert::TryInto;
 use std::mem;
 
+// --- FFT Imports ---
+use num_complex::Complex;
+use rustfft::{Fft, FftPlanner};
+use std::sync::Arc;
+// --- End FFT Imports ---
+
 struct UserData {
     format: spa::param::audio::AudioInfoRaw,
     cursor_move: bool,
+    // --- FFT Data ---
+    /// A planner to create new FFT instances
+    fft_planner: FftPlanner<f32>,
+    /// The FFT algorithm instance
+    fft: Option<Arc<dyn Fft<f32>>>,
+    /// The size of the FFT (buffer size per channel)
+    fft_size: usize,
+    /// Re-usable buffer for FFT input
+    fft_input: Vec<Complex<f32>>,
+    /// Re-usable buffer for FFT output
+    fft_output: Vec<Complex<f32>>,
+    // --- End FFT Data ---
 }
 
 #[derive(Parser)]
@@ -36,6 +47,13 @@ pub fn main() -> Result<(), pw::Error> {
     let data = UserData {
         format: Default::default(),
         cursor_move: false,
+        // --- Initialize FFT Data ---
+        fft_planner: FftPlanner::new(),
+        fft: None,
+        fft_size: 0,
+        fft_input: Vec::new(),
+        fft_output: Vec::new(),
+        // --- End FFT Data ---
     };
 
     /* Create a simple stream, the simple stream manages the core and remote
@@ -102,37 +120,115 @@ pub fn main() -> Result<(), pw::Error> {
                 }
 
                 let data = &mut datas[0];
-                let n_channels = user_data.format.channels();
-                let n_samples = data.chunk().size() / (mem::size_of::<f32>() as u32);
+                let n_channels = user_data.format.channels() as usize;
+                // ‼️ Need to guard against division by zero if format isn't set
+                if n_channels == 0 {
+                    return;
+                }
+
+                let n_samples_total =
+                    (data.chunk().size() / (mem::size_of::<f32>() as u32)) as usize;
+                // ‼️ This is the number of samples *per channel*, which is our FFT size
+                let n_samples_per_channel = n_samples_total / n_channels;
+                if n_samples_per_channel == 0 {
+                    return;
+                }
+
+                // --- Start FFT ---
+
+                // 1. (Re)initialize FFT plan if buffer size changed
+                // This avoids re-allocating, but handles dynamic buffer size changes
+                if user_data.fft_size != n_samples_per_channel {
+                    println!("Initializing FFT for size {}", n_samples_per_channel);
+                    user_data.fft = Some(
+                        user_data
+                            .fft_planner
+                            .plan_fft_forward(n_samples_per_channel),
+                    );
+                    user_data.fft_size = n_samples_per_channel;
+                    // ‼️ Resize re-usable buffers
+                    user_data
+                        .fft_input
+                        .resize(n_samples_per_channel, Complex::default());
+                    user_data
+                        .fft_output
+                        .resize(n_samples_per_channel, Complex::default());
+                }
+
+                // Get the FFT plan. If it's None (e.g., size is 0), just return.
+                let Some(fft) = user_data.fft.as_ref() else {
+                    return;
+                };
 
                 if let Some(samples) = data.data() {
                     if user_data.cursor_move {
-                        print!("\x1B[{}A", n_channels + 1);
+                        print!("\x1B[2A"); // ‼️ We are printing 2 lines now
                     }
-                    println!("captured {} samples", n_samples / n_channels);
-                    for c in 0..n_channels {
-                        let mut max: f32 = 0.0;
-                        for n in (c..n_samples).step_by(n_channels as usize) {
-                            let start = n as usize * mem::size_of::<f32>();
-                            let end = start + mem::size_of::<f32>();
-                            let chan = &samples[start..end];
-                            let f = f32::from_le_bytes(chan.try_into().unwrap());
-                            max = max.max(f.abs());
+                    println!("captured {} samples per channel", n_samples_per_channel);
+
+                    // 2. De-interleave and fill the input buffer
+                    // We'll just process the first channel (channel 0) as an example.
+                    let channel_to_process = 0;
+                    let mut sample_count = 0;
+
+                    for n in (channel_to_process..n_samples_total).step_by(n_channels) {
+                        if sample_count >= n_samples_per_channel {
+                            break;
                         }
 
-                        let peak = ((max * 30.0) as usize).clamp(0, 39);
+                        let start = n * mem::size_of::<f32>();
+                        let end = start + mem::size_of::<f32>();
+                        if end > samples.len() {
+                            break; // Avoid panic on buffer underrun
+                        }
 
-                        println!(
-                            "channel {}: |{:>w1$}{:w2$}| peak:{}",
-                            c,
-                            "*",
-                            "",
-                            max,
-                            w1 = peak + 1,
-                            w2 = 40 - peak
-                        );
+                        let chan_bytes = &samples[start..end];
+                        let f = f32::from_le_bytes(chan_bytes.try_into().unwrap());
+
+                        // Load sample into the complex buffer's real part.
+                        // NOTE: A window function (e.g., Hann) should be applied here
+                        // for real-world applications to reduce spectral leakage.
+                        user_data.fft_input[sample_count].re = f;
+                        user_data.fft_input[sample_count].im = 0.0; // Ensure imaginary part is 0
+
+                        sample_count += 1;
                     }
+
+                    // 3. Run the FFT
+                    // `process` works in-place, so we copy input to output buffer first
+                    user_data.fft_output.copy_from_slice(&user_data.fft_input);
+                    fft.process(&mut user_data.fft_output);
+
+                    // 4. Process the output (find the peak frequency)
+                    // The output is symmetric, so we only need to look at the first half
+                    let mut peak_magnitude: f32 = 0.0;
+                    let mut peak_bin: usize = 0;
+
+                    for (bin_index, complex_val) in user_data.fft_output
+                        [0..n_samples_per_channel / 2] // Only check first half
+                        .iter()
+                        .enumerate()
+                    {
+                        let magnitude = complex_val.norm(); // .norm() is sqrt(re^2 + im^2)
+                        if magnitude > peak_magnitude {
+                            peak_magnitude = magnitude;
+                            peak_bin = bin_index;
+                        }
+                    }
+
+                    // 5. Calculate the actual frequency
+                    // freq = bin_index * (sample_rate / fft_size)
+                    let sample_rate = user_data.format.rate() as f32;
+                    let peak_freq = peak_bin as f32 * (sample_rate / n_samples_per_channel as f32);
+
+                    // Print the peak frequency instead of the volume meter
+                    println!(
+                        "Peak Frequency: {:.2} Hz (Magnitude: {:.2})",
+                        peak_freq, peak_magnitude
+                    );
                     user_data.cursor_move = true;
+
+                    // --- End FFT ---
                 }
             }
         })
