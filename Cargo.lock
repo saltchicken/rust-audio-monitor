@@ -511,7 +511,7 @@ dependencies = [
 [[package]]
 name = "proclink"
 version = "0.1.0"
-source = "git+http://github.com/saltchicken/proclink#9968077f226900bfe1b83a85dc2f3e5fd8b88560"
+source = "git+http://github.com/saltchicken/proclink?rev=a5c1ae1#a5c1ae1af7a757e940483d3813dc4c14e06088f7"
 dependencies = [
  "shared_memory",
 ]

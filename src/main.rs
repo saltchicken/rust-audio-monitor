@@ -43,8 +43,9 @@ pub fn main() -> Result<(), pw::Error> {
     let core = context.connect_rc(None)?;
 
     // ‼️ Initialize the writer
-    let writer =
-        ShmemWriter::new("my_synchronized_shmem").expect("Failed to open or create shared memory");
+    const PAYLOAD_SIZE: usize = 4096;
+    let writer = ShmemWriter::new("my_synchronized_shmem", PAYLOAD_SIZE)
+        .expect("Failed to open or create shared memory");
     println!("[AudioMonitor] Attached to shared memory.");
 
     let data = UserData {
@@ -166,7 +167,7 @@ pub fn main() -> Result<(), pw::Error> {
                     let payload_size = metadata_size + mags_size;
 
                     // ‼️ Check if payload fits (using constants from proclink)
-                    if payload_size > (proclink::SHMEM_SIZE - proclink::DATA_INDEX) {
+                    if payload_size > (PAYLOAD_SIZE - proclink::DATA_INDEX) {
                         // Can't print in RT thread, but this is a critical error
                         // We'll just skip this buffer
                         return;
