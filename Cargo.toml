@@ -6,5 +6,13 @@ edition = "2024"
 [dependencies]
 clap = { version = "4.5.50", features = ["derive"] }
 pipewire = "0.9.2"
-rustfft = "6.4.1"
-num-complex = "0.4.6"
+
+proclink = { git = "http://github.com/saltchicken/proclink", rev = "a5c1ae1" }
+
+[[bin]]
+name = "audio_monitor"
+path = "src/main.rs"
+
+[[bin]]
+name = "audio_reader"
+path = "src/bin/audio_reader.rs"
