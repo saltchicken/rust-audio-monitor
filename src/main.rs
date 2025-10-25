@@ -1,11 +1,10 @@
 use clap::Parser;
 use pipewire as pw;
+use proclink::ShmemWriter;
 use pw::{properties::properties, spa};
 use spa::param::format::{MediaSubtype, MediaType};
 use spa::param::format_utils;
 use spa::pod::Pod;
-// ‼️ Removed unused TryInto
-use proclink::ShmemWriter;
 use std::mem;
 
 struct UserData {
@@ -110,10 +109,7 @@ pub fn main() -> Result<(), pw::Error> {
                         + mem::size_of::<u32>() // n_channels
                         + mem::size_of::<u32>(); // n_samples_per_channel
 
-                    // ‼️ --- THIS IS THE FIX ---
-                    // ‼️ Use the correct `valid_audio_size_bytes` from data.chunk()
                     let audio_data_size = valid_audio_size_bytes;
-                    // ‼️ --- END OF FIX ---
 
                     let payload_size = metadata_size + audio_data_size;
 
@@ -125,10 +121,10 @@ pub fn main() -> Result<(), pw::Error> {
                         return;
                     }
 
-                    // ‼️ 4. Build the payload in the reusable buffer
+                    // 4. Build the payload in the reusable buffer
                     user_data.payload_buffer.resize(payload_size, 0);
 
-                    // ‼️ Write metadata
+                    // Write metadata
                     let mut offset = 0;
                     user_data.payload_buffer[offset..offset + 4]
                         .copy_from_slice(&sample_rate.to_le_bytes());
@@ -142,14 +138,12 @@ pub fn main() -> Result<(), pw::Error> {
                         .copy_from_slice(&n_samples_per_channel_u32.to_le_bytes());
                     offset += 4;
 
-                    // ‼️ Write raw audio data
-                    // ‼️ This line is now correct, because `audio_data_size` is correct.
-                    // ‼️ It will slice `samples` to the valid chunk (e.g., [0..8192])
+                    // Write raw audio data
                     let valid_sample_slice = &samples[0..audio_data_size];
                     user_data.payload_buffer[offset..offset + audio_data_size]
                         .copy_from_slice(valid_sample_slice);
 
-                    // ‼️ 5. Write the complete payload to shared memory
+                    // 5. Write the complete payload to shared memory
                     match user_data.writer.write(&user_data.payload_buffer) {
                         Ok(true) => {
                             if user_data.cursor_move {
@@ -174,7 +168,6 @@ pub fn main() -> Result<(), pw::Error> {
         })
         .register()?;
 
-    // ... (This section is unchanged) ...
     let mut audio_info = spa::param::audio::AudioInfoRaw::new();
     audio_info.set_format(spa::param::audio::AudioFormat::F32LE);
     let obj = pw::spa::pod::Object {
