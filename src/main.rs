@@ -40,12 +40,13 @@ pub fn main() -> Result<(), pw::Error> {
         payload_buffer: Vec::new(),
     };
 
-    let props = properties! {
+    let mut props = properties! {
         *pw::keys::MEDIA_TYPE => "Audio",
         *pw::keys::MEDIA_CATEGORY => "Capture",
         *pw::keys::MEDIA_ROLE => "Music",
     };
 
+    props.insert(*pw::keys::STREAM_CAPTURE_SINK, "true");
     let stream = pw::stream::StreamBox::new(&core, "audio-capture", props)?;
 
     let _listener = stream
