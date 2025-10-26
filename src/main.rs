@@ -2,6 +2,7 @@ use clap::Parser;
 use pipewire as pw;
 use proclink::ShmemWriter;
 use pw::{properties::properties, spa};
+use rust_audio_monitor_lib::{AudioMetadata, METADATA_SIZE};
 use spa::param::format::{MediaSubtype, MediaType};
 use spa::param::format_utils;
 use spa::pod::Pod;
@@ -38,26 +39,22 @@ pub fn main() -> Result<(), pw::Error> {
     let mainloop = pw::main_loop::MainLoopRc::new(None)?;
     let context = pw::context::ContextRc::new(&mainloop, None)?;
     let core = context.connect_rc(None)?;
-
     // Initialize the writer
     const PAYLOAD_SIZE: usize = 16384;
     let writer =
         ShmemWriter::new(&opt.name, PAYLOAD_SIZE).expect("Failed to open or create shared memory");
     println!("[AudioMonitor] Attached to shared memory.");
-
     let data = UserData {
         format: Default::default(),
         cursor_move: false,
         writer,
         payload_buffer: Vec::new(),
     };
-
     let mut props = properties! {
         *pw::keys::MEDIA_TYPE => "Audio",
         *pw::keys::MEDIA_CATEGORY => "Capture",
         *pw::keys::MEDIA_ROLE => "Music",
     };
-
     if !opt.input {
         props.insert(*pw::keys::STREAM_CAPTURE_SINK, "true");
         println!(
@@ -66,9 +63,7 @@ pub fn main() -> Result<(), pw::Error> {
     } else {
         println!("[AudioMonitor] Capturing from SOURCE (input).");
     }
-
     let stream = pw::stream::StreamBox::new(&core, "audio-capture", props)?;
-
     let _listener = stream
         .add_local_listener_with_user_data(data)
         .param_changed(|_, user_data, id, param| {
@@ -103,41 +98,32 @@ pub fn main() -> Result<(), pw::Error> {
                 if datas.is_empty() {
                     return;
                 }
-
                 let data = &mut datas[0];
                 let n_channels = user_data.format.channels() as usize;
                 if n_channels == 0 {
                     return;
                 }
-
                 let valid_audio_size_bytes = data.chunk().size() as usize;
                 let n_samples_total = valid_audio_size_bytes / (mem::size_of::<f32>() as usize);
                 let n_samples_per_channel = n_samples_total / n_channels;
-
                 if n_samples_per_channel == 0 {
                     return;
                 }
-
                 if let Some(samples) = data.data() {
-                    // 1. Define metadata
-                    // We will send: sample_rate (f32), n_channels (u32), n_samples_per_channel (u32)
-                    let sample_rate = user_data.format.rate() as f32;
-                    let n_channels_u32 = user_data.format.channels(); // This is already u32
-                    let n_samples_per_channel_u32 = n_samples_per_channel as u32;
+                    // 1. Define metadata using our shared struct
+                    let metadata = AudioMetadata {
+                        sample_rate: user_data.format.rate() as f32,
+                        n_channels: user_data.format.channels(), // This is already u32
+                        n_samples_per_channel: n_samples_per_channel as u32,
+                    };
 
                     // 2. Calculate sizes
-                    let metadata_size = mem::size_of::<f32>() // sample_rate
-                        + mem::size_of::<u32>() // n_channels
-                        + mem::size_of::<u32>(); // n_samples_per_channel
-
+                    let metadata_size = METADATA_SIZE;
                     let audio_data_size = valid_audio_size_bytes;
-
                     let payload_size = metadata_size + audio_data_size;
 
                     // 3. Check if payload fits
                     if payload_size > (PAYLOAD_SIZE - proclink::DATA_INDEX) {
-                        // Can't print in RT thread, but this is a critical error
-                        // We'll just skip this buffer
                         println!("[AudioMonitor] ⚠️ Payload too large, skipping buffer.");
                         return;
                     }
@@ -145,23 +131,13 @@ pub fn main() -> Result<(), pw::Error> {
                     // 4. Build the payload in the reusable buffer
                     user_data.payload_buffer.resize(payload_size, 0);
 
-                    // Write metadata
-                    let mut offset = 0;
-                    user_data.payload_buffer[offset..offset + 4]
-                        .copy_from_slice(&sample_rate.to_le_bytes());
-                    offset += 4;
-
-                    user_data.payload_buffer[offset..offset + 4]
-                        .copy_from_slice(&n_channels_u32.to_le_bytes());
-                    offset += 4;
-
-                    user_data.payload_buffer[offset..offset + 4]
-                        .copy_from_slice(&n_samples_per_channel_u32.to_le_bytes());
-                    offset += 4;
+                    // Write metadata using bytemuck::bytes_of
+                    user_data.payload_buffer[0..metadata_size]
+                        .copy_from_slice(bytemuck::bytes_of(&metadata));
 
                     // Write raw audio data
                     let valid_sample_slice = &samples[0..audio_data_size];
-                    user_data.payload_buffer[offset..offset + audio_data_size]
+                    user_data.payload_buffer[metadata_size..payload_size]
                         .copy_from_slice(valid_sample_slice);
 
                     // 5. Write the complete payload to shared memory
@@ -172,12 +148,14 @@ pub fn main() -> Result<(), pw::Error> {
                             }
                             println!(
                                 "[AudioMonitor] ✅ Wrote {} bytes ({} samples @ {} Hz, {} ch).",
-                                payload_size, n_samples_per_channel, sample_rate, n_channels_u32
+                                payload_size,
+                                n_samples_per_channel,
+                                metadata.sample_rate,
+                                metadata.n_channels
                             );
                             user_data.cursor_move = true;
                         }
                         Ok(false) => {
-                            // Can't print in RT thread, but we'll try for debugging
                             println!("[AudioMonitor] ⚠️ Failed to write to shared memory.");
                         }
                         Err(_) => {
@@ -212,8 +190,6 @@ pub fn main() -> Result<(), pw::Error> {
             | pw::stream::StreamFlags::RT_PROCESS,
         &mut params,
     )?;
-
     mainloop.run();
-
     Ok(())
 }

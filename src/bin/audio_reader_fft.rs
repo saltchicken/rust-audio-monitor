@@ -1,10 +1,9 @@
+use clap::Parser;
 use proclink::ShmemReader;
-use std::{mem, thread, time::Duration};
-
+use rust_audio_monitor_lib::{AudioMetadata, METADATA_SIZE};
 use rustfft::{Fft, FftPlanner, num_complex::Complex};
 use std::sync::Arc;
-
-use clap::Parser;
+use std::{mem, thread, time::Duration};
 
 #[derive(Parser)]
 #[clap(name = "audio-reader-fft")]
@@ -21,48 +20,48 @@ fn main() {
     let args = Args::parse();
     let reader = ShmemReader::new(&args.name)
         .expect("Failed to open shared memory. Is the audio_monitor running?");
-
     println!("[AudioReaderFFT] Attached to shared memory. Waiting for data...");
 
-    // ‼️ --- Added for FFT ---
-    // We create a planner and a reusable plan variable.
-    // This is much more efficient than creating a new FFT plan for every audio buffer.
+    // --- Added for FFT ---
     let mut planner = FftPlanner::new();
     let mut fft_plan: Option<(usize, Arc<dyn Fft<f32>>)> = None;
     let mut complex_buffer: Vec<Complex<f32>> = Vec::new();
-    // ‼️ --- End FFT Setup ---
+    // --- End FFT Setup ---
 
     loop {
         match reader.read() {
             Ok(Some(data)) => {
-                // Must have at least 12 bytes for our metadata
-                // (f32 sample_rate + u32 n_channels + u32 n_samples_per_channel)
-                if data.len() < 12 {
-                    println!("[AudioReaderFFT] ⚠️ Received data is too small for metadata!");
+                // 1. Check if we have enough data for the metadata header
+                if data.len() < METADATA_SIZE {
+                    println!(
+                        "[AudioReaderFFT] ⚠️ Received data is too small for metadata! Need {}, got {}",
+                        METADATA_SIZE,
+                        data.len()
+                    );
                     continue;
                 }
 
-                // Parse new metadata
-                let sample_rate =
-                    f32::from_le_bytes(data[0..4].try_into().expect("Bad sample_rate"));
-                let n_channels = u32::from_le_bytes(data[4..8].try_into().expect("Bad n_channels"));
-                let n_samples_per_channel =
-                    u32::from_le_bytes(data[8..12].try_into().expect("Bad n_samples_per_channel"));
+                // 2. Split the data into metadata and audio
+                let (metadata_bytes, audio_data) = data.split_at(METADATA_SIZE);
 
-                // Get audio data
-                let audio_data = &data[12..];
+                // 3. Cast the metadata bytes into our struct
+                let metadata: &AudioMetadata = bytemuck::from_bytes(metadata_bytes);
+
+                // 4. Get audio data info
                 let audio_data_len = audio_data.len();
 
-                // Calculate expected vs. received
-                let expected_bytes =
-                    (n_samples_per_channel * n_channels * mem::size_of::<f32>() as u32) as usize;
+                // 5. Calculate expected vs. received
+                let expected_bytes = (metadata.n_samples_per_channel
+                    * metadata.n_channels
+                    * mem::size_of::<f32>() as u32) as usize;
+
                 let num_floats_received = audio_data_len / mem::size_of::<f32>();
 
                 // Print the info (as before)
                 println!("[AudioReaderFFT] ✅ Read {} bytes total.", data.len());
-                println!("  Sample Rate: {} Hz", sample_rate);
-                println!("  Channels: {}", n_channels);
-                println!("  Samples per Channel: {}", n_samples_per_channel);
+                println!("  Sample Rate: {} Hz", metadata.sample_rate);
+                println!("  Channels: {}", metadata.n_channels);
+                println!("  Samples per Channel: {}", metadata.n_samples_per_channel);
                 println!(
                     "  Audio Data Bytes: {} (Expected: {})",
                     audio_data_len, expected_bytes
@@ -76,12 +75,12 @@ fn main() {
                     );
                 }
 
-                // ‼️ --- Start FFT Calculation ---
-                if n_samples_per_channel > 0 && n_channels > 0 {
-                    let n_samples = n_samples_per_channel as usize;
-                    let n_chans_usize = n_channels as usize;
+                // --- Start FFT Calculation ---
+                if metadata.n_samples_per_channel > 0 && metadata.n_channels > 0 {
+                    let n_samples = metadata.n_samples_per_channel as usize;
+                    let n_chans_usize = metadata.n_channels as usize;
 
-                    // 1. Get or create the FFT plan for the current buffer size
+                    // 1. Get or create the FFT plan
                     let fft = match &mut fft_plan {
                         Some((size, plan)) if *size == n_samples => plan,
                         _ => {
@@ -95,26 +94,25 @@ fn main() {
                         }
                     };
 
-                    // 2. Prepare the complex buffer. We only take channel 0 (the first channel).
+                    // 2. Prepare the complex buffer.
                     complex_buffer.clear();
                     complex_buffer.resize(n_samples, Complex::default());
 
-                    for i in 0..n_samples {
-                        let sample_start_byte = i * n_chans_usize * mem::size_of::<f32>();
-                        let sample_end_byte = sample_start_byte + mem::size_of::<f32>();
+                    // Cast the raw audio data bytes to a slice of f32.
+                    // This is safe because we know the sender uses F32LE.
+                    let audio_floats: &[f32] = bytemuck::cast_slice(audio_data);
 
-                        if sample_end_byte > audio_data.len() {
-                            break; // Avoid panic on incomplete data
-                        }
-
-                        // Read the f32 sample for channel 0
-                        let sample_bytes: [u8; 4] = audio_data[sample_start_byte..sample_end_byte]
-                            .try_into()
-                            .unwrap();
-                        let sample_f32 = f32::from_le_bytes(sample_bytes);
-
+                    // We only take channel 0.
+                    // We can use `step_by` for a much cleaner iteration of the interleaved samples.
+                    for (i, sample_f32) in audio_floats
+                        .iter()
+                        .step_by(n_chans_usize) // Take every Nth sample (e.g., [L], R, [L], R)
+                        .enumerate()
+                        .take(n_samples)
+                    // Ensure we don't go past the buffer size
+                    {
                         complex_buffer[i] = Complex {
-                            re: sample_f32,
+                            re: *sample_f32,
                             im: 0.0,
                         };
                     }
@@ -123,16 +121,15 @@ fn main() {
                     fft.process(&mut complex_buffer);
 
                     // 4. Find the peak frequency
-                    // We only need to check the first half of the bins (due to Nyquist theorem)
-                    let (peak_bin_index, peak_magnitude) = complex_buffer[..n_samples / 2] // Only check first half
+                    let (peak_bin_index, peak_magnitude) = complex_buffer[..n_samples / 2]
                         .iter()
                         .enumerate()
-                        .map(|(i, c)| (i, c.norm())) // Get index and magnitude (c.norm() is sqrt(re^2 + im^2))
+                        .map(|(i, c)| (i, c.norm()))
                         .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
                         .unwrap_or((0, 0.0));
 
                     // 5. Convert the bin index back to a frequency
-                    let bin_width = sample_rate / (n_samples as f32);
+                    let bin_width = metadata.sample_rate / (n_samples as f32); // ‼️ Use struct
                     let peak_frequency = peak_bin_index as f32 * bin_width;
 
                     println!(
@@ -140,7 +137,7 @@ fn main() {
                         peak_frequency, peak_magnitude
                     );
                 }
-                // ‼️ --- End FFT Calculation ---
+                // --- End FFT Calculation ---
             }
             Ok(None) => {
                 // No new data, just wait.
