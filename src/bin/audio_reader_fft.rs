@@ -1,6 +1,6 @@
 use clap::Parser;
+use pipelink_audio_lib::{AudioMetadata, METADATA_SIZE};
 use proclink::ShmemReader;
-use rust_audio_monitor_lib::{AudioMetadata, METADATA_SIZE};
 use rustfft::{Fft, FftPlanner, num_complex::Complex};
 use std::sync::Arc;
 use std::{mem, thread, time::Duration};

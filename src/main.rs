@@ -1,8 +1,8 @@
 use clap::Parser;
+use pipelink_audio_lib::{AudioMetadata, METADATA_SIZE};
 use pipewire as pw;
 use proclink::ShmemWriter;
 use pw::{properties::properties, spa};
-use rust_audio_monitor_lib::{AudioMetadata, METADATA_SIZE};
 use spa::param::format::{MediaSubtype, MediaType};
 use spa::param::format_utils;
 use spa::pod::Pod;
@@ -16,7 +16,7 @@ struct UserData {
 }
 
 #[derive(Parser)]
-#[clap(name = "audio-capture", about = "Audio stream capture example")]
+#[clap(name = "pipelink-audio", about = "Audio stream capture example")]
 struct Opt {
     #[clap(short, long, help = "The target object id to connect to")]
     target: Option<String>,

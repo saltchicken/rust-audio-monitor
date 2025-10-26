@@ -468,6 +468,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "384b8ab6d37215f3c5301a95a4accb5d64aa607f1fcb26a11b5303878451b4fe"
 
 [[package]]
+name = "pipelink-audio"
+version = "0.1.0"
+dependencies = [
+ "bytemuck",
+ "clap",
+ "num-complex",
+ "pipewire",
+ "proclink",
+ "rustfft",
+]
+
+[[package]]
 name = "pipewire"
 version = "0.9.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -603,18 +615,6 @@ name = "regex-syntax"
 version = "0.8.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7a2d987857b319362043e95f5353c0535c1f58eec5336fdfcf626430af7def58"
-
-[[package]]
-name = "rust-audio-monitor"
-version = "0.1.0"
-dependencies = [
- "bytemuck",
- "clap",
- "num-complex",
- "pipewire",
- "proclink",
- "rustfft",
-]
 
 [[package]]
 name = "rustc-hash"
