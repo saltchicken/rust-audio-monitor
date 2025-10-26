@@ -104,7 +104,7 @@ pub fn main() -> Result<(), pw::Error> {
                     return;
                 }
                 let valid_audio_size_bytes = data.chunk().size() as usize;
-                let n_samples_total = valid_audio_size_bytes / (mem::size_of::<f32>() as usize);
+                let n_samples_total = valid_audio_size_bytes / (mem::size_of::<f32>());
                 let n_samples_per_channel = n_samples_total / n_channels;
                 if n_samples_per_channel == 0 {
                     return;
