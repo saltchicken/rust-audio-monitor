@@ -10,8 +10,8 @@ pipewire = "0.9.2"
 
 proclink = { git = "http://github.com/saltchicken/proclink", rev = "a5c1ae1" }
 
-rustfft = "6.4.1"
-num-complex = "0.4.6"
+rustfft = { version = "6.4.1", optional = true }
+num-complex = { version = "0.4.6", optional = true }
 
 [lib]
 name = "rust_audio_monitor_lib"
@@ -28,3 +28,4 @@ path = "src/bin/audio_reader.rs"
 [[bin]]
 name = "audio_reader_fft"
 path = "src/bin/audio_reader_fft.rs"
+required-features = ["rustfft", "num-complex"]
