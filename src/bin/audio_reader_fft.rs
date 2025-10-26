@@ -11,7 +11,7 @@ struct Args {
     #[clap(
         long,
         help = "Shared memory name to read from",
-        default_value = "my_synchronized_shmem"
+        default_value = "pipelink_audio_shmem"
     )]
     name: String,
 }

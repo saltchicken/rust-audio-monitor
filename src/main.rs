@@ -28,7 +28,7 @@ struct Opt {
     #[clap(
         long,
         help = "Name for the shared memory file",
-        default_value = "my_synchronized_shmem"
+        default_value = "pipelink_audio_shmem"
     )]
     name: String,
 }
