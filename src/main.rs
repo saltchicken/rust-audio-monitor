@@ -19,9 +19,15 @@ struct UserData {
 struct Opt {
     #[clap(short, long, help = "The target object id to connect to")]
     target: Option<String>,
+    #[clap(
+        long,
+        help = "Capture from an input source (e.g., mic) instead of an output sink (default)"
+    )]
+    input: bool,
 }
 
 pub fn main() -> Result<(), pw::Error> {
+    let opt = Opt::parse();
     pw::init();
     let mainloop = pw::main_loop::MainLoopRc::new(None)?;
     let context = pw::context::ContextRc::new(&mainloop, None)?;
@@ -46,7 +52,15 @@ pub fn main() -> Result<(), pw::Error> {
         *pw::keys::MEDIA_ROLE => "Music",
     };
 
-    props.insert(*pw::keys::STREAM_CAPTURE_SINK, "true");
+    if !opt.input {
+        props.insert(*pw::keys::STREAM_CAPTURE_SINK, "true");
+        println!(
+            "[AudioMonitor] Capturing from SINK (output). Use --input to capture from a SOURCE (e.g., mic)."
+        );
+    } else {
+        println!("[AudioMonitor] Capturing from SOURCE (input).");
+    }
+
     let stream = pw::stream::StreamBox::new(&core, "audio-capture", props)?;
 
     let _listener = stream
