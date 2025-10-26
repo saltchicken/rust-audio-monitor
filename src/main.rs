@@ -24,6 +24,12 @@ struct Opt {
         help = "Capture from an input source (e.g., mic) instead of an output sink (default)"
     )]
     input: bool,
+    #[clap(
+        long,
+        help = "Name for the shared memory file",
+        default_value = "my_synchronized_shmem"
+    )]
+    name: String,
 }
 
 pub fn main() -> Result<(), pw::Error> {
@@ -35,8 +41,8 @@ pub fn main() -> Result<(), pw::Error> {
 
     // Initialize the writer
     const PAYLOAD_SIZE: usize = 16384;
-    let writer = ShmemWriter::new("my_synchronized_shmem", PAYLOAD_SIZE)
-        .expect("Failed to open or create shared memory");
+    let writer =
+        ShmemWriter::new(&opt.name, PAYLOAD_SIZE).expect("Failed to open or create shared memory");
     println!("[AudioMonitor] Attached to shared memory.");
 
     let data = UserData {

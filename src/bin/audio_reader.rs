@@ -1,8 +1,22 @@
 use proclink::ShmemReader;
 use std::{mem, thread, time::Duration};
 
+use clap::Parser;
+
+#[derive(Parser)]
+#[clap(name = "audio-reader")]
+struct Args {
+    #[clap(
+        long,
+        help = "Name of the shared memory to read from",
+        default_value = "my_synchronized_shmem"
+    )]
+    name: String,
+}
+
 fn main() {
-    let reader = ShmemReader::new("my_synchronized_shmem")
+    let args = Args::parse();
+    let reader = ShmemReader::new(&args.name)
         .expect("Failed to open shared memory. Is the audio_monitor running?");
 
     println!("[AudioReader] Attached to shared memory. Waiting for data...");
