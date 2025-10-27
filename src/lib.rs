@@ -1,15 +1,15 @@
-use clap::Parser; // ‼️
+use clap::Parser;
 use pipewire as pw;
-use proclink::{ShmemReader, ShmemWriter}; // ‼️
+use proclink::{ShmemReader, ShmemWriter};
 use pw::{properties::properties, spa};
 use spa::param::format::{MediaSubtype, MediaType};
 use spa::param::format_utils;
 use spa::pod::Pod;
-use std::fmt; // ‼️
+use std::fmt;
 use std::mem;
 
 // ----------------------------------------------------------------------------
-// ‼️ SHARED DATA STRUCTURE (Unchanged)
+// SHARED DATA STRUCTURE
 // ----------------------------------------------------------------------------
 
 /// `#[repr(C)]` ensures Rust doesn't reorder the fields.
@@ -26,7 +26,7 @@ pub struct AudioMetadata {
 pub const METADATA_SIZE: usize = std::mem::size_of::<AudioMetadata>();
 
 // ----------------------------------------------------------------------------
-// ‼️ WRITER API (Moved from src/main.rs)
+// WRITER API
 // ----------------------------------------------------------------------------
 
 /// Internal struct to hold PipeWire stream state
@@ -37,9 +37,8 @@ struct UserData {
     payload_buffer: Vec<u8>,
 }
 
-/// ‼️ Public struct for configuring the audio writer.
-/// This was formerly `Opt` in `main.rs`.
-#[derive(Parser, Debug)] // ‼️ Made public
+/// Public struct for configuring the audio writer.
+#[derive(Parser, Debug)]
 #[clap(name = "pipelink-audio", about = "Audio stream capture example")]
 pub struct AudioWriterArgs {
     #[clap(short, long, help = "The target object id to connect to")]
@@ -57,11 +56,8 @@ pub struct AudioWriterArgs {
         default_value = "pipelink_audio_shmem"
     )]
     pub name: String,
-    // ‼️ You can add more args here, like payload size, if needed
 }
 
-/// ‼️ Public function to run the audio writer.
-/// This contains all the logic from the old `main.rs`.
 pub fn run_writer(args: AudioWriterArgs) -> Result<(), pw::Error> {
     pw::init();
     let mainloop = pw::main_loop::MainLoopRc::new(None)?;
@@ -69,7 +65,7 @@ pub fn run_writer(args: AudioWriterArgs) -> Result<(), pw::Error> {
     let core = context.connect_rc(None)?;
 
     // Initialize the writer
-    const PAYLOAD_SIZE: usize = 16384; // ‼️ Consider making this an arg in AudioWriterArgs
+    const PAYLOAD_SIZE: usize = 16384; // TODO: Consider making this an arg in AudioWriterArgs
     let writer =
         ShmemWriter::new(&args.name, PAYLOAD_SIZE).expect("Failed to open or create shared memory");
     println!("[AudioMonitor] Attached to shared memory.");
@@ -221,10 +217,9 @@ pub fn run_writer(args: AudioWriterArgs) -> Result<(), pw::Error> {
 }
 
 // ----------------------------------------------------------------------------
-// ‼️ READER API (Moved from src/bin/audio_reader.rs)
+// READER API
 // ----------------------------------------------------------------------------
 
-/// ‼️ A new public struct to hold the parsed audio data from a read.
 /// The lifetime `'a` is bound to the `AudioReader`'s internal buffer.
 #[derive(Debug)]
 pub struct ParsedAudioData<'a> {
@@ -232,7 +227,6 @@ pub struct ParsedAudioData<'a> {
     pub audio: &'a [f32],
 }
 
-/// ‼️ A new public error type for the reader.
 #[derive(Debug)]
 pub enum AudioReadError {
     Shmem(proclink::ShmemLinkError),
@@ -286,7 +280,6 @@ impl AudioReader {
         Ok(Self { reader })
     }
 
-    // ‼️ THIS IS THE CORRECTED FUNCTION, MOVED INSIDE THE 'impl' BLOCK
     /// Reads and parses the next available audio frame.
     ///
     /// This performs a zero-copy read and returns slices pointing
@@ -307,7 +300,6 @@ impl AudioReader {
                 let (metadata_bytes, audio_data_bytes) = data.split_at(METADATA_SIZE);
 
                 // 3. Cast the metadata bytes into our struct
-                // ‼️ Use `try_from_bytes` for safe library code (doesn't panic)
                 let metadata: &AudioMetadata = bytemuck::try_from_bytes(metadata_bytes)
                     .map_err(AudioReadError::InvalidMetadata)?;
 
@@ -324,7 +316,7 @@ impl AudioReader {
                     });
                 }
 
-                // 6. ‼️ Cast the audio data to a float slice
+                // 6. Cast the audio data to a float slice
                 let audio: &[f32] = bytemuck::try_cast_slice(audio_data_bytes)
                     .map_err(AudioReadError::InvalidAudioData)?;
 
