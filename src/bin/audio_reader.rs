@@ -1,5 +1,5 @@
 use clap::Parser;
-use pipelink_audio_lib::{AudioReadError, AudioReader, METADATA_SIZE}; // ‼️ Import our new helpers
+use pipelink_audio_lib::{AudioReadError, AudioReader, METADATA_SIZE};
 use std::{mem, thread, time::Duration};
 
 #[derive(Parser)]
@@ -24,8 +24,8 @@ fn main() {
         // ‼️ Call the new read method
         match reader.read() {
             Ok(Some(data)) => {
-                // ‼️ The data is already parsed!
-                let audio_data_len = data.audio.len() * mem::size_of::<f32>();
+                let audio_data_len = mem::size_of_val(data.audio);
+
                 let total_bytes = METADATA_SIZE + audio_data_len;
 
                 println!("[AudioReader] ✅ Read {} bytes total.", total_bytes);
