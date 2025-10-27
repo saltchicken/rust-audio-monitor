@@ -29,15 +29,13 @@ fn main() {
     // --- End FFT Setup ---
 
     loop {
-        // ‼️ Call the new read method
         match reader.read() {
             Ok(Some(data)) => {
-                // ‼️ Get the parsed data directly
                 let metadata = data.metadata;
                 let audio_floats = data.audio;
 
                 // --- Print Info (Same as simple reader) ---
-                let audio_data_len = audio_floats.len() * mem::size_of::<f32>();
+                let audio_data_len = mem::size_of_val(data.audio);
                 let total_bytes = METADATA_SIZE + audio_data_len;
                 println!("[AudioReaderFFT] ✅ Read {} bytes total.", total_bytes);
                 println!("  Sample Rate: {} Hz", metadata.sample_rate);
@@ -72,8 +70,6 @@ fn main() {
                     complex_buffer.clear();
                     complex_buffer.resize(n_samples, Complex::default());
 
-                    // ‼️ This is now much simpler! We already have &[f32]
-                    // No need for bytemuck::cast_slice here.
                     for (i, sample_f32) in audio_floats
                         .iter()
                         .step_by(n_chans_usize) // Take every Nth sample (e.g., [L], R, [L], R)
@@ -112,32 +108,29 @@ fn main() {
             Ok(None) => {
                 // No new data, just wait.
             }
-            Err(e) => {
-                // ‼️ Use the same robust error handling
-                match e {
-                    AudioReadError::Shmem(shmem_err) => {
-                        eprintln!("[AudioReaderFFT] ❌ Shared memory error: {}", shmem_err);
-                        break;
-                    }
-                    AudioReadError::DataTooSmall { needed, got } => {
-                        eprintln!(
-                            "[AudioReaderFFT] ⚠️ Parse error: Data too small. Needed {}, got {}",
-                            needed, got
-                        );
-                    }
-                    AudioReadError::DataMismatch { expected, got } => {
-                        eprintln!(
-                            "[AudioReaderFFT] ⚠️ Parse error: Data mismatch. Expected {} audio bytes, got {}",
-                            expected, got
-                        );
-                    }
-                    AudioReadError::InvalidMetadata(_) | AudioReadError::InvalidAudioData(_) => {
-                        eprintln!(
-                            "[AudioReaderFFT] ⚠️ Parse error: Data is corrupted and cannot be cast."
-                        );
-                    }
+            Err(e) => match e {
+                AudioReadError::Shmem(shmem_err) => {
+                    eprintln!("[AudioReaderFFT] ❌ Shared memory error: {}", shmem_err);
+                    break;
                 }
-            }
+                AudioReadError::DataTooSmall { needed, got } => {
+                    eprintln!(
+                        "[AudioReaderFFT] ⚠️ Parse error: Data too small. Needed {}, got {}",
+                        needed, got
+                    );
+                }
+                AudioReadError::DataMismatch { expected, got } => {
+                    eprintln!(
+                        "[AudioReaderFFT] ⚠️ Parse error: Data mismatch. Expected {} audio bytes, got {}",
+                        expected, got
+                    );
+                }
+                AudioReadError::InvalidMetadata(_) | AudioReadError::InvalidAudioData(_) => {
+                    eprintln!(
+                        "[AudioReaderFFT] ⚠️ Parse error: Data is corrupted and cannot be cast."
+                    );
+                }
+            },
         }
         // Poll for new data
         thread::sleep(Duration::from_millis(1));
