@@ -17,7 +17,6 @@ struct Args {
 
 fn main() {
     let args = Args::parse();
-    // ‼️ Use the new AudioReader
     let reader = AudioReader::new(&args.name)
         .expect("Failed to open shared memory. Is the audio_monitor running?");
     println!("[AudioReaderFFT] Attached to shared memory. Waiting for data...");
