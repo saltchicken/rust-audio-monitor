@@ -1,6 +1,5 @@
 use clap::Parser;
-use pipelink_audio_lib::{AudioMetadata, METADATA_SIZE};
-use proclink::ShmemReader;
+use pipelink_audio_lib::{AudioReadError, AudioReader, METADATA_SIZE}; // ‼️ Import our new helpers
 use std::{mem, thread, time::Duration};
 
 #[derive(Parser)]
@@ -16,64 +15,61 @@ struct Args {
 
 fn main() {
     let args = Args::parse();
-    let reader = ShmemReader::new(&args.name)
+    // ‼️ Use the new AudioReader
+    let reader = AudioReader::new(&args.name)
         .expect("Failed to open shared memory. Is the audio_monitor running?");
     println!("[AudioReader] Attached to shared memory. Waiting for data...");
 
     loop {
+        // ‼️ Call the new read method
         match reader.read() {
             Ok(Some(data)) => {
-                // 1. Check if we have enough data for the metadata header
-                if data.len() < METADATA_SIZE {
-                    println!(
-                        "[AudioReader] ⚠️ Received data is too small for metadata! Need {}, got {}",
-                        METADATA_SIZE,
-                        data.len()
-                    );
-                    continue;
-                }
+                // ‼️ The data is already parsed!
+                let audio_data_len = data.audio.len() * mem::size_of::<f32>();
+                let total_bytes = METADATA_SIZE + audio_data_len;
 
-                // 2. Split the data into metadata and audio
-                let (metadata_bytes, audio_data) = data.split_at(METADATA_SIZE);
-
-                // 3. Cast the metadata bytes into our struct
-                // This is a zero-copy operation!
-                let metadata: &AudioMetadata = bytemuck::from_bytes(metadata_bytes);
-
-                // 4. Get audio data info
-                let audio_data_len = audio_data.len();
-
-                // 5. Calculate expected vs. received
-                let expected_bytes = (metadata.n_samples_per_channel
-                    * metadata.n_channels
-                    * mem::size_of::<f32>() as u32) as usize;
-
-                let num_floats_received = audio_data_len / mem::size_of::<f32>();
-
-                // Print the info
-                println!("[AudioReader] ✅ Read {} bytes total.", data.len());
-                println!("  Sample Rate: {} Hz", metadata.sample_rate);
-                println!("  Channels: {}", metadata.n_channels);
-                println!("  Samples per Channel: {}", metadata.n_samples_per_channel);
+                println!("[AudioReader] ✅ Read {} bytes total.", total_bytes);
+                println!("  Sample Rate: {} Hz", data.metadata.sample_rate);
+                println!("  Channels: {}", data.metadata.n_channels);
+                println!(
+                    "  Samples per Channel: {}",
+                    data.metadata.n_samples_per_channel
+                );
                 println!(
                     "  Audio Data Bytes: {} (Expected: {})",
-                    audio_data_len, expected_bytes
+                    audio_data_len,
+                    audio_data_len // They will match due to check in read()
                 );
-                println!("  Total Floats Received: {}\n", num_floats_received);
-
-                // Simple validation
-                if audio_data_len != expected_bytes {
-                    println!(
-                        "[AudioReader] ⚠️ WARNING: Received audio data size does not match metadata!"
-                    );
-                }
+                println!("  Total Floats Received: {}\n", data.audio.len());
             }
             Ok(None) => {
                 // No new data, just wait.
             }
             Err(e) => {
-                eprintln!("[AudioReader] ❌ Error reading: {}", e);
-                break;
+                // ‼️ Handle the new, more descriptive error types
+                match e {
+                    AudioReadError::Shmem(shmem_err) => {
+                        eprintln!("[AudioReader] ❌ Shared memory error: {}", shmem_err);
+                        break; // Exit on critical SHM error
+                    }
+                    AudioReadError::DataTooSmall { needed, got } => {
+                        eprintln!(
+                            "[AudioReader] ⚠️ Parse error: Data too small. Needed {}, got {}",
+                            needed, got
+                        );
+                    }
+                    AudioReadError::DataMismatch { expected, got } => {
+                        eprintln!(
+                            "[AudioReader] ⚠️ Parse error: Data mismatch. Expected {} audio bytes, got {}",
+                            expected, got
+                        );
+                    }
+                    AudioReadError::InvalidMetadata(_) | AudioReadError::InvalidAudioData(_) => {
+                        eprintln!(
+                            "[AudioReader] ⚠️ Parse error: Data is corrupted and cannot be cast."
+                        );
+                    }
+                }
             }
         }
         // Poll for new data

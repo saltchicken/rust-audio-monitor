@@ -1,6 +1,5 @@
 use clap::Parser;
-use pipelink_audio_lib::{AudioMetadata, METADATA_SIZE};
-use proclink::ShmemReader;
+use pipelink_audio_lib::{AudioReadError, AudioReader, METADATA_SIZE}; // ‼️ Import new helpers
 use rustfft::{Fft, FftPlanner, num_complex::Complex};
 use std::sync::Arc;
 use std::{mem, thread, time::Duration};
@@ -18,7 +17,8 @@ struct Args {
 
 fn main() {
     let args = Args::parse();
-    let reader = ShmemReader::new(&args.name)
+    // ‼️ Use the new AudioReader
+    let reader = AudioReader::new(&args.name)
         .expect("Failed to open shared memory. Is the audio_monitor running?");
     println!("[AudioReaderFFT] Attached to shared memory. Waiting for data...");
 
@@ -29,51 +29,25 @@ fn main() {
     // --- End FFT Setup ---
 
     loop {
+        // ‼️ Call the new read method
         match reader.read() {
             Ok(Some(data)) => {
-                // 1. Check if we have enough data for the metadata header
-                if data.len() < METADATA_SIZE {
-                    println!(
-                        "[AudioReaderFFT] ⚠️ Received data is too small for metadata! Need {}, got {}",
-                        METADATA_SIZE,
-                        data.len()
-                    );
-                    continue;
-                }
+                // ‼️ Get the parsed data directly
+                let metadata = data.metadata;
+                let audio_floats = data.audio;
 
-                // 2. Split the data into metadata and audio
-                let (metadata_bytes, audio_data) = data.split_at(METADATA_SIZE);
-
-                // 3. Cast the metadata bytes into our struct
-                let metadata: &AudioMetadata = bytemuck::from_bytes(metadata_bytes);
-
-                // 4. Get audio data info
-                let audio_data_len = audio_data.len();
-
-                // 5. Calculate expected vs. received
-                let expected_bytes = (metadata.n_samples_per_channel
-                    * metadata.n_channels
-                    * mem::size_of::<f32>() as u32) as usize;
-
-                let num_floats_received = audio_data_len / mem::size_of::<f32>();
-
-                // Print the info (as before)
-                println!("[AudioReaderFFT] ✅ Read {} bytes total.", data.len());
+                // --- Print Info (Same as simple reader) ---
+                let audio_data_len = audio_floats.len() * mem::size_of::<f32>();
+                let total_bytes = METADATA_SIZE + audio_data_len;
+                println!("[AudioReaderFFT] ✅ Read {} bytes total.", total_bytes);
                 println!("  Sample Rate: {} Hz", metadata.sample_rate);
                 println!("  Channels: {}", metadata.n_channels);
                 println!("  Samples per Channel: {}", metadata.n_samples_per_channel);
                 println!(
                     "  Audio Data Bytes: {} (Expected: {})",
-                    audio_data_len, expected_bytes
+                    audio_data_len, audio_data_len
                 );
-                println!("  Total Floats Received: {}\n", num_floats_received);
-
-                // Simple validation (as before)
-                if audio_data_len != expected_bytes {
-                    println!(
-                        "[AudioReaderFFT] ⚠️ WARNING: Received audio data size does not match metadata!"
-                    );
-                }
+                println!("  Total Floats Received: {}\n", audio_floats.len());
 
                 // --- Start FFT Calculation ---
                 if metadata.n_samples_per_channel > 0 && metadata.n_channels > 0 {
@@ -98,12 +72,8 @@ fn main() {
                     complex_buffer.clear();
                     complex_buffer.resize(n_samples, Complex::default());
 
-                    // Cast the raw audio data bytes to a slice of f32.
-                    // This is safe because we know the sender uses F32LE.
-                    let audio_floats: &[f32] = bytemuck::cast_slice(audio_data);
-
-                    // We only take channel 0.
-                    // We can use `step_by` for a much cleaner iteration of the interleaved samples.
+                    // ‼️ This is now much simpler! We already have &[f32]
+                    // No need for bytemuck::cast_slice here.
                     for (i, sample_f32) in audio_floats
                         .iter()
                         .step_by(n_chans_usize) // Take every Nth sample (e.g., [L], R, [L], R)
@@ -129,7 +99,7 @@ fn main() {
                         .unwrap_or((0, 0.0));
 
                     // 5. Convert the bin index back to a frequency
-                    let bin_width = metadata.sample_rate / (n_samples as f32); // ‼️ Use struct
+                    let bin_width = metadata.sample_rate / (n_samples as f32);
                     let peak_frequency = peak_bin_index as f32 * bin_width;
 
                     println!(
@@ -143,8 +113,30 @@ fn main() {
                 // No new data, just wait.
             }
             Err(e) => {
-                eprintln!("[AudioReaderFFT] ❌ Error reading: {}", e);
-                break;
+                // ‼️ Use the same robust error handling
+                match e {
+                    AudioReadError::Shmem(shmem_err) => {
+                        eprintln!("[AudioReaderFFT] ❌ Shared memory error: {}", shmem_err);
+                        break;
+                    }
+                    AudioReadError::DataTooSmall { needed, got } => {
+                        eprintln!(
+                            "[AudioReaderFFT] ⚠️ Parse error: Data too small. Needed {}, got {}",
+                            needed, got
+                        );
+                    }
+                    AudioReadError::DataMismatch { expected, got } => {
+                        eprintln!(
+                            "[AudioReaderFFT] ⚠️ Parse error: Data mismatch. Expected {} audio bytes, got {}",
+                            expected, got
+                        );
+                    }
+                    AudioReadError::InvalidMetadata(_) | AudioReadError::InvalidAudioData(_) => {
+                        eprintln!(
+                            "[AudioReaderFFT] ⚠️ Parse error: Data is corrupted and cannot be cast."
+                        );
+                    }
+                }
             }
         }
         // Poll for new data
