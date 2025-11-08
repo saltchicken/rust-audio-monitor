@@ -19,7 +19,6 @@ enum State {
 
 struct UserData {
     format: Option<spa::param::audio::AudioInfoRaw>,
-    cursor_move: bool,
     state: State,
     buffer: Vec<f32>,
 }
@@ -39,7 +38,7 @@ fn save_recording_from_buffer(buffer: Vec<f32>, format: &spa::param::audio::Audi
     };
 
     let filename = "recording.wav";
-    println!("Saving recording to {}...", filename);
+    // println!("Saving recording to {}...", filename);
 
     match WavWriter::create(filename, spec) {
         Ok(mut writer) => {
@@ -52,11 +51,11 @@ fn save_recording_from_buffer(buffer: Vec<f32>, format: &spa::param::audio::Audi
             if let Err(e) = writer.finalize() {
                 eprintln!("Error finalizing WAV file: {}", e);
             } else {
-                println!(
-                    "Saved {} samples ({} channels).",
-                    buffer.len(),
-                    format.channels()
-                );
+                // println!(
+                //     "Saved {} samples ({} channels).",
+                //     buffer.len(),
+                //     format.channels()
+                // );
             }
         }
         Err(e) => {
@@ -73,19 +72,17 @@ pub fn main() -> Result<(), pw::Error> {
 
     let data = Arc::new(Mutex::new(UserData {
         format: None,
-        cursor_move: false,
         state: State::Listening,
         buffer: Vec::new(),
     }));
 
     /* Create a simple stream */
-    let mut props = properties! {
+    let props = properties! {
         *pw::keys::MEDIA_TYPE => "Audio",
         *pw::keys::MEDIA_CATEGORY => "Capture",
         *pw::keys::MEDIA_ROLE => "Music",
+        *pw::keys::STREAM_CAPTURE_SINK => "true",
     };
-    // uncomment if you want to capture from the sink monitor ports
-    props.insert(*pw::keys::STREAM_CAPTURE_SINK, "true");
 
     let stream = pw::stream::StreamBox::new(&core, "audio-capture", props)?;
 
@@ -138,11 +135,6 @@ pub fn main() -> Result<(), pw::Error> {
                     let n_channels = format.channels();
                     let n_samples = data.chunk().size() / (mem::size_of::<f32>() as u32);
                     if let Some(samples) = data.data() {
-                        if user_data.cursor_move {
-                            print!("\x1B[{}A", n_channels + 1);
-                        }
-                        println!("captured {} samples", n_samples / n_channels);
-
                         // Parse all samples into a temporary Vec
                         let mut all_samples = Vec::with_capacity(n_samples as usize);
                         for n in 0..(n_samples as usize) {
@@ -156,26 +148,6 @@ pub fn main() -> Result<(), pw::Error> {
                         if user_data.state == State::Recording {
                             user_data.buffer.extend_from_slice(&all_samples);
                         }
-
-                        // --- Metering logic (unchanged, but uses `all_samples`) ---
-                        for c in 0..n_channels {
-                            let mut max: f32 = 0.0;
-                            for n in (c as usize..n_samples as usize).step_by(n_channels as usize) {
-                                let f = all_samples[n];
-                                max = max.max(f.abs());
-                            }
-                            let peak = ((max * 30.0) as usize).clamp(0, 39);
-                            println!(
-                                "channel {}: |{:>w1$}{:w2$}| peak:{}",
-                                c,
-                                "*",
-                                "",
-                                max,
-                                w1 = peak + 1,
-                                w2 = 40 - peak
-                            );
-                        }
-                        user_data.cursor_move = true;
                     }
                 }
             }
@@ -227,11 +199,9 @@ pub fn main() -> Result<(), pw::Error> {
                     }
                     user_data.state = State::Recording;
                     user_data.buffer.clear();
-                    println!("\n*** STATE: RECORDING *** (Press Enter to stop)");
                 }
                 State::Recording => {
                     user_data.state = State::Listening;
-                    println!("\n*** STATE: LISTENING *** (Saving...)");
 
                     // Swap buffers to release lock quickly
                     let buffer_to_save = std::mem::take(&mut user_data.buffer);
