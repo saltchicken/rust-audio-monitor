@@ -92,7 +92,7 @@ fn start_ipc_listener(data: Arc<Mutex<UserData>>) -> std::io::Result<()> {
                     }
 
                     let parts: Vec<&str> = line.trim().splitn(2, ' ').collect();
-                    let command = parts.get(0).unwrap_or(&"");
+                    let command = parts.first().unwrap_or(&"");
                     let payload = parts.get(1);
 
                     let mut user_data = data.lock().unwrap();
