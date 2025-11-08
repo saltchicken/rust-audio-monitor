@@ -51,11 +51,11 @@ fn save_recording_from_buffer(buffer: Vec<f32>, format: &spa::param::audio::Audi
             if let Err(e) = writer.finalize() {
                 eprintln!("Error finalizing WAV file: {}", e);
             } else {
-                // println!(
-                //     "Saved {} samples ({} channels).",
-                //     buffer.len(),
-                //     format.channels()
-                // );
+                println!(
+                    "Saved {} samples ({} channels).",
+                    buffer.len(),
+                    format.channels()
+                );
             }
         }
         Err(e) => {
