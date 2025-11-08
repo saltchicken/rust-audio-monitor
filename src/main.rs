@@ -138,15 +138,13 @@ fn start_ipc_listener(data: Arc<Mutex<UserData>>) -> std::io::Result<()> {
                             }
                         }
                         "STATUS" => {
-                            // ‼️ Format the status message
                             let status_msg = format!("STATUS: {:?}\n", user_data.state);
 
-                            // ‼️ Write the message back to the client socket
-                            // ‼️ We use (&stream) to borrow the stream for writing
+                            // Write the message back to the client socket
+                            // Use (&stream) to borrow the stream for writing
                             if let Err(e) = (&stream).write_all(status_msg.as_bytes()) {
                                 eprintln!("Failed to write status to client: {}", e);
                             } else {
-                                // ‼️ Log on the server that we sent the status
                                 println!("Sent status to client: {:?}", user_data.state);
                             }
                         }
