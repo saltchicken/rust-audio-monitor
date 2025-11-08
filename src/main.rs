@@ -1,4 +1,3 @@
-use clap::Parser;
 use pipewire as pw;
 use pw::{properties::properties, spa};
 use spa::param::format::{MediaSubtype, MediaType};
@@ -23,13 +22,6 @@ struct UserData {
     cursor_move: bool,
     state: State,
     buffer: Vec<f32>,
-}
-
-#[derive(Parser)]
-#[clap(name = "audio-capture", about = "Audio stream capture example")]
-struct Opt {
-    #[clap(short, long, help = "The target object id to connect to")]
-    target: Option<String>,
 }
 
 // This is called *after* the state change to avoid blocking the audio thread.
