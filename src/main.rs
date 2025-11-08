@@ -1,8 +1,3 @@
-// Copyright The pipewire-rs Contributors.
-// SPDX-License-Identifier: MIT
-//! This file is a rustic interpretation of the [PipeWire audio-capture.c example][example]
-//!
-//! example: https://docs.pipewire.org/audio-capture_8c-example.html
 use clap::Parser;
 use pipewire as pw;
 use pw::{properties::properties, spa};
@@ -13,7 +8,7 @@ use std::convert::TryInto;
 use std::mem;
 
 use hound::{SampleFormat, WavSpec, WavWriter};
-use std::io::{self, Read};
+use std::io;
 use std::sync::{Arc, Mutex};
 use std::thread;
 
@@ -249,7 +244,7 @@ pub fn main() -> Result<(), pw::Error> {
                     // Swap buffers to release lock quickly
                     let buffer_to_save = std::mem::take(&mut user_data.buffer);
                     // Clone format info so we can release the lock
-                    let format_to_save = user_data.format.as_ref().unwrap().clone();
+                    let format_to_save = *user_data.format.as_ref().unwrap();
 
                     // Drop the lock *before* file I/O
                     drop(user_data);
