@@ -5,19 +5,17 @@ use spa::param::format::{MediaSubtype, MediaType};
 use spa::param::format_utils;
 use spa::pod::Pod;
 use std::convert::TryInto;
-use std::mem;
-// ‼️ Added/changed imports for IPC
 use std::fs;
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, Write};
+use std::mem;
 use std::os::unix::net::UnixListener;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::thread;
 
-#[derive(Debug, PartialEq, Clone)] // ‼️ Removed Copy
+#[derive(Debug, PartialEq, Clone)]
 enum State {
     Listening,
-    // ‼️ Store the save path within the Recording state
     Recording(PathBuf),
 }
 
@@ -27,18 +25,15 @@ struct UserData {
     buffer: Vec<f32>,
 }
 
-// ‼️ Function signature changed to accept a PathBuf
 fn save_recording_from_buffer(
     buffer: Vec<f32>,
     format: &spa::param::audio::AudioInfoRaw,
-    filename: &Path, // ‼️ Use Path
+    filename: &Path,
 ) {
     if buffer.is_empty() {
         println!("Buffer is empty, not saving.");
         return;
     }
-
-    // ‼️ Create parent directories if they don't exist
     if let Some(parent) = filename.parent() {
         if !parent.exists() {
             if let Err(e) = fs::create_dir_all(parent) {
@@ -47,15 +42,13 @@ fn save_recording_from_buffer(
             }
         }
     }
-
     let spec = WavSpec {
         channels: format.channels() as u16,
         sample_rate: format.rate(),
-        bits_per_sample: 32, // We are using f32
+        bits_per_sample: 32,
         sample_format: SampleFormat::Float,
     };
-
-    println!("Saving recording to {}...", filename.display()); // ‼️ Use display()
+    println!("Saving recording to {}...", filename.display());
     match WavWriter::create(filename, spec) {
         Ok(mut writer) => {
             for &sample in &buffer {
@@ -71,7 +64,7 @@ fn save_recording_from_buffer(
                     "Saved {} samples ({} channels) to {}.",
                     buffer.len(),
                     format.channels(),
-                    filename.display() // ‼️
+                    filename.display()
                 );
             }
         }
@@ -81,27 +74,20 @@ fn save_recording_from_buffer(
     }
 }
 
-// ‼️ This is the new command handler thread
 fn start_ipc_listener(data: Arc<Mutex<UserData>>) -> std::io::Result<()> {
     let socket_path = "/tmp/rust-audio-monitor.sock";
-
-    // ‼️ Clean up any old socket file that might exist
     let _ = fs::remove_file(socket_path);
-
     let listener = UnixListener::bind(socket_path)?;
     println!("Control socket listening at {}", socket_path);
 
-    // ‼️ Accept incoming connections
     for stream in listener.incoming() {
         match stream {
             Ok(stream) => {
-                let mut reader = BufReader::new(stream);
+                let mut reader = BufReader::new(&stream);
                 let mut line = String::new();
 
-                // ‼️ Read commands from the client (e.g., "START /foo/bar.wav", "STOP")
                 while let Ok(bytes_read) = reader.read_line(&mut line) {
                     if bytes_read == 0 {
-                        // ‼️ Client disconnected
                         break;
                     }
 
@@ -134,7 +120,6 @@ fn start_ipc_listener(data: Arc<Mutex<UserData>>) -> std::io::Result<()> {
                             }
                         }
                         "STOP" => {
-                            // ‼️ Use mem::replace to atomically switch state
                             let old_state =
                                 std::mem::replace(&mut user_data.state, State::Listening);
 
@@ -142,8 +127,6 @@ fn start_ipc_listener(data: Arc<Mutex<UserData>>) -> std::io::Result<()> {
                                 println!("STOP recording.");
                                 let buffer_to_save = std::mem::take(&mut user_data.buffer);
                                 let format_to_save = *user_data.format.as_ref().unwrap();
-
-                                // ‼️ Drop lock *before* saving file
                                 drop(user_data);
 
                                 save_recording_from_buffer(
@@ -156,14 +139,24 @@ fn start_ipc_listener(data: Arc<Mutex<UserData>>) -> std::io::Result<()> {
                             }
                         }
                         "STATUS" => {
-                            println!("STATUS: {:?}", user_data.state);
+                            // ‼️ Format the status message
+                            let status_msg = format!("STATUS: {:?}\n", user_data.state);
+
+                            // ‼️ Write the message back to the client socket
+                            // ‼️ We use (&stream) to borrow the stream for writing
+                            if let Err(e) = (&stream).write_all(status_msg.as_bytes()) {
+                                eprintln!("Failed to write status to client: {}", e);
+                            } else {
+                                // ‼️ Log on the server that we sent the status
+                                println!("Sent status to client: {:?}", user_data.state);
+                            }
                         }
                         _ => {
                             eprintln!("Unknown command: {}", line.trim());
                         }
                     }
 
-                    line.clear(); // ‼️ Clear buffer for next command
+                    line.clear();
                 }
             }
             Err(e) => {
@@ -180,14 +173,11 @@ pub fn main() -> Result<(), pw::Error> {
     let mainloop = pw::main_loop::MainLoopRc::new(None)?;
     let context = pw::context::ContextRc::new(&mainloop, None)?;
     let core = context.connect_rc(None)?;
-
     let data = Arc::new(Mutex::new(UserData {
         format: None,
         state: State::Listening,
         buffer: Vec::new(),
     }));
-
-    /* Create a simple stream */
     let props = properties! {
         *pw::keys::MEDIA_TYPE => "Audio",
         *pw::keys::MEDIA_CATEGORY => "Capture",
@@ -195,11 +185,9 @@ pub fn main() -> Result<(), pw::Error> {
         *pw::keys::STREAM_CAPTURE_SINK => "true",
     };
     let stream = pw::stream::StreamBox::new(&core, "audio-capture", props)?;
-
     let _listener = stream
         .add_local_listener_with_user_data(data.clone())
         .param_changed(|_, user_data_arc, id, param| {
-            // ... (rest of this closure is unchanged)
             let Some(param) = param else {
                 return;
             };
@@ -229,14 +217,10 @@ pub fn main() -> Result<(), pw::Error> {
             let Some(format) = user_data.format.as_ref() else {
                 return;
             };
-
-            // ‼️ Check state *before* processing buffer
             if user_data.state == State::Listening {
-                // ‼️ Still dequeue to keep the buffer chain moving, but do nothing with it
                 let _ = stream.dequeue_buffer();
                 return;
             }
-
             match stream.dequeue_buffer() {
                 None => println!("out of buffers"),
                 Some(mut buffer) => {
@@ -245,7 +229,7 @@ pub fn main() -> Result<(), pw::Error> {
                         return;
                     }
                     let data = &mut datas[0];
-                    let _n_channels = format.channels(); // ‼️ Not needed here
+                    let _n_channels = format.channels();
                     let n_samples = data.chunk().size() / (mem::size_of::<f32>() as u32);
                     if let Some(samples) = data.data() {
                         let mut all_samples = Vec::with_capacity(n_samples as usize);
@@ -255,9 +239,6 @@ pub fn main() -> Result<(), pw::Error> {
                             let chan = &samples[start..end];
                             all_samples.push(f32::from_le_bytes(chan.try_into().unwrap()));
                         }
-
-                        // ‼️ This check is technically redundant now,
-                        // but good to keep for clarity.
                         if let State::Recording(_) = user_data.state {
                             user_data.buffer.extend_from_slice(&all_samples);
                         }
@@ -266,9 +247,6 @@ pub fn main() -> Result<(), pw::Error> {
             }
         })
         .register()?;
-
-    /* Make one parameter with the supported formats. */
-    // ... (This section is unchanged)
     let mut audio_info = spa::param::audio::AudioInfoRaw::new();
     audio_info.set_format(spa::param::audio::AudioFormat::F32LE);
     let obj = pw::spa::pod::Object {
@@ -284,9 +262,6 @@ pub fn main() -> Result<(), pw::Error> {
     .0
     .into_inner();
     let mut params = [Pod::from_bytes(&values).unwrap()];
-
-    /* Now connect this stream. */
-    // ... (This section is unchanged)
     stream.connect(
         spa::utils::Direction::Input,
         None,
@@ -295,18 +270,13 @@ pub fn main() -> Result<(), pw::Error> {
             | pw::stream::StreamFlags::RT_PROCESS,
         &mut params,
     )?;
-
-    // ‼️ Spawn the new IPC listener thread
     let ipc_data = data.clone();
     thread::spawn(move || {
         if let Err(e) = start_ipc_listener(ipc_data) {
             eprintln!("IPC listener thread failed: {}", e);
         }
     });
-
     mainloop.run();
-
-    // ‼️ Clean up the socket file on exit
     let _ = fs::remove_file("/tmp/rust-audio-monitor.sock");
     Ok(())
 }
