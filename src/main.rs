@@ -1,3 +1,4 @@
+use hound::{SampleFormat, WavSpec, WavWriter};
 use pipewire as pw;
 use pw::{properties::properties, spa};
 use spa::param::format::{MediaSubtype, MediaType};
@@ -5,16 +6,19 @@ use spa::param::format_utils;
 use spa::pod::Pod;
 use std::convert::TryInto;
 use std::mem;
-
-use hound::{SampleFormat, WavSpec, WavWriter};
-use std::io;
+// ‼️ Added/changed imports for IPC
+use std::fs;
+use std::io::{BufRead, BufReader};
+use std::os::unix::net::UnixListener;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::thread;
 
-#[derive(Debug, PartialEq, Clone, Copy)]
+#[derive(Debug, PartialEq, Clone)] // ‼️ Removed Copy
 enum State {
     Listening,
-    Recording,
+    // ‼️ Store the save path within the Recording state
+    Recording(PathBuf),
 }
 
 struct UserData {
@@ -23,11 +27,25 @@ struct UserData {
     buffer: Vec<f32>,
 }
 
-// This is called *after* the state change to avoid blocking the audio thread.
-fn save_recording_from_buffer(buffer: Vec<f32>, format: &spa::param::audio::AudioInfoRaw) {
+// ‼️ Function signature changed to accept a PathBuf
+fn save_recording_from_buffer(
+    buffer: Vec<f32>,
+    format: &spa::param::audio::AudioInfoRaw,
+    filename: &Path, // ‼️ Use Path
+) {
     if buffer.is_empty() {
         println!("Buffer is empty, not saving.");
         return;
+    }
+
+    // ‼️ Create parent directories if they don't exist
+    if let Some(parent) = filename.parent() {
+        if !parent.exists() {
+            if let Err(e) = fs::create_dir_all(parent) {
+                eprintln!("Failed to create directory {}: {}", parent.display(), e);
+                return;
+            }
+        }
     }
 
     let spec = WavSpec {
@@ -37,9 +55,7 @@ fn save_recording_from_buffer(buffer: Vec<f32>, format: &spa::param::audio::Audi
         sample_format: SampleFormat::Float,
     };
 
-    let filename = "recording.wav";
-    // println!("Saving recording to {}...", filename);
-
+    println!("Saving recording to {}...", filename.display()); // ‼️ Use display()
     match WavWriter::create(filename, spec) {
         Ok(mut writer) => {
             for &sample in &buffer {
@@ -52,9 +68,10 @@ fn save_recording_from_buffer(buffer: Vec<f32>, format: &spa::param::audio::Audi
                 eprintln!("Error finalizing WAV file: {}", e);
             } else {
                 println!(
-                    "Saved {} samples ({} channels).",
+                    "Saved {} samples ({} channels) to {}.",
                     buffer.len(),
-                    format.channels()
+                    format.channels(),
+                    filename.display() // ‼️
                 );
             }
         }
@@ -62,6 +79,100 @@ fn save_recording_from_buffer(buffer: Vec<f32>, format: &spa::param::audio::Audi
             eprintln!("Error creating WAV file: {}", e);
         }
     }
+}
+
+// ‼️ This is the new command handler thread
+fn start_ipc_listener(data: Arc<Mutex<UserData>>) -> std::io::Result<()> {
+    let socket_path = "/tmp/rust-audio-monitor.sock";
+
+    // ‼️ Clean up any old socket file that might exist
+    let _ = fs::remove_file(socket_path);
+
+    let listener = UnixListener::bind(socket_path)?;
+    println!("Control socket listening at {}", socket_path);
+
+    // ‼️ Accept incoming connections
+    for stream in listener.incoming() {
+        match stream {
+            Ok(stream) => {
+                let mut reader = BufReader::new(stream);
+                let mut line = String::new();
+
+                // ‼️ Read commands from the client (e.g., "START /foo/bar.wav", "STOP")
+                while let Ok(bytes_read) = reader.read_line(&mut line) {
+                    if bytes_read == 0 {
+                        // ‼️ Client disconnected
+                        break;
+                    }
+
+                    let parts: Vec<&str> = line.trim().splitn(2, ' ').collect();
+                    let command = parts.get(0).unwrap_or(&"");
+                    let payload = parts.get(1);
+
+                    let mut user_data = data.lock().unwrap();
+
+                    match *command {
+                        "START" => {
+                            if let Some(path_str) = payload {
+                                if user_data.format.is_none() {
+                                    eprintln!("Refused START: Audio format not yet known.");
+                                    continue;
+                                }
+                                match user_data.state {
+                                    State::Listening => {
+                                        let path = PathBuf::from(path_str);
+                                        println!("START recording to {}", path.display());
+                                        user_data.state = State::Recording(path);
+                                        user_data.buffer.clear();
+                                    }
+                                    State::Recording(_) => {
+                                        eprintln!("Refused START: Already recording.");
+                                    }
+                                }
+                            } else {
+                                eprintln!("Invalid START: Missing file path.");
+                            }
+                        }
+                        "STOP" => {
+                            // ‼️ Use mem::replace to atomically switch state
+                            let old_state =
+                                std::mem::replace(&mut user_data.state, State::Listening);
+
+                            if let State::Recording(save_path) = old_state {
+                                println!("STOP recording.");
+                                let buffer_to_save = std::mem::take(&mut user_data.buffer);
+                                let format_to_save = *user_data.format.as_ref().unwrap();
+
+                                // ‼️ Drop lock *before* saving file
+                                drop(user_data);
+
+                                save_recording_from_buffer(
+                                    buffer_to_save,
+                                    &format_to_save,
+                                    &save_path,
+                                );
+                            } else {
+                                eprintln!("Refused STOP: Not recording.");
+                            }
+                        }
+                        "STATUS" => {
+                            println!("STATUS: {:?}", user_data.state);
+                        }
+                        _ => {
+                            eprintln!("Unknown command: {}", line.trim());
+                        }
+                    }
+
+                    line.clear(); // ‼️ Clear buffer for next command
+                }
+            }
+            Err(e) => {
+                eprintln!("IPC connection failed: {}", e);
+            }
+        }
+    }
+
+    Ok(())
 }
 
 pub fn main() -> Result<(), pw::Error> {
@@ -83,13 +194,12 @@ pub fn main() -> Result<(), pw::Error> {
         *pw::keys::MEDIA_ROLE => "Music",
         *pw::keys::STREAM_CAPTURE_SINK => "true",
     };
-
     let stream = pw::stream::StreamBox::new(&core, "audio-capture", props)?;
 
     let _listener = stream
         .add_local_listener_with_user_data(data.clone())
         .param_changed(|_, user_data_arc, id, param| {
-            // NULL means to clear the format
+            // ... (rest of this closure is unchanged)
             let Some(param) = param else {
                 return;
             };
@@ -100,16 +210,13 @@ pub fn main() -> Result<(), pw::Error> {
                 Ok(v) => v,
                 Err(_) => return,
             };
-            // only accept raw audio
             if media_type != MediaType::Audio || media_subtype != MediaSubtype::Raw {
                 return;
             }
-
             let mut user_data = user_data_arc.lock().unwrap();
             let mut info = spa::param::audio::AudioInfoRaw::new();
             info.parse(param)
                 .expect("Failed to parse param changed to AudioInfoRaw");
-
             println!(
                 "capturing rate:{} channels:{}",
                 info.rate(),
@@ -119,10 +226,16 @@ pub fn main() -> Result<(), pw::Error> {
         })
         .process(|stream, user_data_arc| {
             let mut user_data = user_data_arc.lock().unwrap();
-
             let Some(format) = user_data.format.as_ref() else {
                 return;
             };
+
+            // ‼️ Check state *before* processing buffer
+            if user_data.state == State::Listening {
+                // ‼️ Still dequeue to keep the buffer chain moving, but do nothing with it
+                let _ = stream.dequeue_buffer();
+                return;
+            }
 
             match stream.dequeue_buffer() {
                 None => println!("out of buffers"),
@@ -132,10 +245,9 @@ pub fn main() -> Result<(), pw::Error> {
                         return;
                     }
                     let data = &mut datas[0];
-                    let n_channels = format.channels();
+                    let _n_channels = format.channels(); // ‼️ Not needed here
                     let n_samples = data.chunk().size() / (mem::size_of::<f32>() as u32);
                     if let Some(samples) = data.data() {
-                        // Parse all samples into a temporary Vec
                         let mut all_samples = Vec::with_capacity(n_samples as usize);
                         for n in 0..(n_samples as usize) {
                             let start = n * mem::size_of::<f32>();
@@ -144,8 +256,9 @@ pub fn main() -> Result<(), pw::Error> {
                             all_samples.push(f32::from_le_bytes(chan.try_into().unwrap()));
                         }
 
-                        // If recording, add samples to the main buffer
-                        if user_data.state == State::Recording {
+                        // ‼️ This check is technically redundant now,
+                        // but good to keep for clarity.
+                        if let State::Recording(_) = user_data.state {
                             user_data.buffer.extend_from_slice(&all_samples);
                         }
                     }
@@ -155,6 +268,7 @@ pub fn main() -> Result<(), pw::Error> {
         .register()?;
 
     /* Make one parameter with the supported formats. */
+    // ... (This section is unchanged)
     let mut audio_info = spa::param::audio::AudioInfoRaw::new();
     audio_info.set_format(spa::param::audio::AudioFormat::F32LE);
     let obj = pw::spa::pod::Object {
@@ -172,6 +286,7 @@ pub fn main() -> Result<(), pw::Error> {
     let mut params = [Pod::from_bytes(&values).unwrap()];
 
     /* Now connect this stream. */
+    // ... (This section is unchanged)
     stream.connect(
         spa::utils::Direction::Input,
         None,
@@ -181,44 +296,17 @@ pub fn main() -> Result<(), pw::Error> {
         &mut params,
     )?;
 
-    // Spawn a new thread to listen for stdin input
-    let input_data = data.clone(); // Clone Arc for the new thread
+    // ‼️ Spawn the new IPC listener thread
+    let ipc_data = data.clone();
     thread::spawn(move || {
-        println!("Capturing audio. Press Enter to start/stop recording...");
-        let stdin = io::stdin();
-        let mut buffer = String::new(); // Use a string buffer for read_line
-
-        // Loop and block on read_line
-        while stdin.read_line(&mut buffer).is_ok() {
-            let mut user_data = input_data.lock().unwrap();
-            match user_data.state {
-                State::Listening => {
-                    if user_data.format.is_none() {
-                        println!("\n*** Audio format not yet known. Wait a moment. ***");
-                        continue; // Don't toggle, just wait for next Enter
-                    }
-                    user_data.state = State::Recording;
-                    user_data.buffer.clear();
-                }
-                State::Recording => {
-                    user_data.state = State::Listening;
-
-                    // Swap buffers to release lock quickly
-                    let buffer_to_save = std::mem::take(&mut user_data.buffer);
-                    // Clone format info so we can release the lock
-                    let format_to_save = *user_data.format.as_ref().unwrap();
-
-                    // Drop the lock *before* file I/O
-                    drop(user_data);
-
-                    save_recording_from_buffer(buffer_to_save, &format_to_save);
-                }
-            }
-            buffer.clear(); // Clear buffer for the next read_line
+        if let Err(e) = start_ipc_listener(ipc_data) {
+            eprintln!("IPC listener thread failed: {}", e);
         }
     });
 
     mainloop.run();
 
+    // ‼️ Clean up the socket file on exit
+    let _ = fs::remove_file("/tmp/rust-audio-monitor.sock");
     Ok(())
 }
