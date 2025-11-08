@@ -34,13 +34,12 @@ fn save_recording_from_buffer(
         println!("Buffer is empty, not saving.");
         return;
     }
-    if let Some(parent) = filename.parent() {
-        if !parent.exists() {
-            if let Err(e) = fs::create_dir_all(parent) {
-                eprintln!("Failed to create directory {}: {}", parent.display(), e);
-                return;
-            }
-        }
+    if let Some(parent) = filename.parent()
+        && !parent.exists()
+        && let Err(e) = fs::create_dir_all(parent)
+    {
+        eprintln!("Failed to create directory {}: {}", parent.display(), e);
+        return;
     }
     let spec = WavSpec {
         channels: format.channels() as u16,
